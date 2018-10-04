@@ -1,0 +1,143 @@
+---
+title: "Predicting CEO Role Profile"
+author: "tiangsinf"
+date: "10/3/2018"
+output: html_document
+---
+
+```{r prelim, include=FALSE}
+library(tidyverse)
+library(ggplot2)
+library(funModeling)
+library(Hmisc)
+
+data <- read.csv("dataset/ceo_role.csv", header = TRUE, check.names = FALSE)
+```
+
+```{r}
+glimpse(data)
+df_status(data)
+freq(data)
+plot_num(data[-c(1:2)])
+describe(data)
+
+# discard first column and move classification to second column
+data <- data %>% 
+  select(-c(1)) %>%
+  select(1, 5, everything())
+```
+
+```{r}
+set.seed(0)
+seed_index = sample(5000, 4000)
+
+train <- data[seed_index, ]
+test <- data[-seed_index, ]
+
+x <- names(data[-c(1:2)])
+y <- names(data[2])
+```
+
+## RandomForest
+
+```{r}
+library(h2o)
+h2o.init()
+
+h2o_train <- as.h2o(train)
+h2o_test <- as.h2o(test)
+
+system.time(
+  m <- h2o.randomForest(x, y, h2o_train, nfolds = 10, model_id = "RF_defaults")
+)
+```
+
+```{r}
+summary(m)
+plot(m)
+h2o.varimp(m)
+h2o.performance(m, h2o_test)
+
+```
+
+## GLM
+
+```{r}
+m_gbm <- h2o.gbm(x, y, h2o_train, nfolds = 10, model_id = "GBM_defaults")
+h2o.varimp(m)
+```
+
+## K-mean clustering
+```{r}
+h2o_data <- as.h2o(data)
+
+m_kmean <- h2o.kmeans(h2o_data, x = 2:49, k = 5, standardize = FALSE, init = "PlusPlus")
+p_kmean <- h2o.predict(m_kmean, h2o_data)
+tapply(as.vector(h2o_data[, 2]), as.vector(p_kmean$predict), print)
+
+p_kmean_mat <- as.matrix(p_kmean)
+View(p_kmean_mat)
+```
+
+```{r}
+View(head(data, n = 50))
+```
+
+## Autoencoder
+
+```{r}
+m_autoen <- h2o.deeplearning(training_frame = h2o_data, x = 2:49, hidden = c(2), autoencoder = T, activation = "Tanh")
+f <- h2o.deepfeatures(m, h2o_data, layer = 1)
+```
+
+## Decision Tree
+```{r}
+library(rpart) #classification and regression trees
+library(partykit) #tree plot
+library(randomForest)
+library(gbm)
+library(caret) #tune hyper-parameters
+
+# Train decision tree
+tree.data <- rpart(classification~., data = train)
+
+# View split result
+tree.data$cptable
+
+# Plot result
+plotcp(tree.data)
+
+# prune tree ("https://en.wikipedia.org/wiki/Pruning_(decision_trees)")
+cp <- min(tree.data$cptable[5,])
+prune.tree.data = prune(tree.data, cp = cp)
+plot(as.party(tree.data))
+```
+
+## C50 Decision Tree
+```{r}
+library(C50)
+
+C50tree <- C5.0(y = train$classification, x = train[, c(3:49)], Trials = 10)
+summary(C50tree)
+
+predict.C5.0(C50tree, test, trials = 10, type = "class")
+```
+
+## Split Data by Industry & analyse with decision tree
+```{r}
+head(data)
+data_tech_startup <- data %>%
+  filter(nature.of.business == "technology" & business.cycle == "startup") %>%
+  select(-c(3:4))
+
+# Data split
+set.seed(0)
+seed_index2 <- sample(nrow(data_tech_startup), 0.80 * (nrow(data_tech_startup)))
+
+# Split table
+train_ind <- data_tech_startup[seed_index2, ]
+test_ind <- data_tech_startup[-seed_index2, ]
+
+C50tree_ind <- C5.0(y = train_ind$classification, x = train[, c(3:47)], Trials = 10)
+```
+
